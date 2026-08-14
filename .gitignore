@@ -1,0 +1,7 @@
+Brush.app/
+Brush.zip
+.DS_Store
+.omc/
+.agents/
+skills-lock.json
+.claude/
