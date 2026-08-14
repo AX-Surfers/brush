@@ -4,7 +4,7 @@ import Carbon.HIToolbox
 // MARK: - 도구
 
 enum Tool: Int {
-    case pen, arrow, rect, text
+    case pen, arrow, rect, text, eraser
 }
 
 struct Shape {
@@ -15,11 +15,11 @@ struct Shape {
     var text: String? = nil
 }
 
-// 굵기 토글이 도는 순서 — 툴바 버튼을 누를 때마다 다음 값
-let brushWidths: [CGFloat] = [2, 4, 8, 14]
+// 툴바에 그대로 한 줄씩 놓이는 굵기 — 강의 화면에서 보이라고 전체적으로 굵게 잡았다
+let brushWidths: [CGFloat] = [4, 8, 14, 22]
 
-// 텍스트 크기도 굵기 토글에 묶는다 (별도 컨트롤을 만들 이유가 없음)
-func fontSize(for width: CGFloat) -> CGFloat { 8 + width * 2 }
+// 텍스트 크기도 굵기에 묶는다 (별도 컨트롤을 만들 이유가 없음) — 기본 8 → 36pt
+func fontSize(for width: CGFloat) -> CGFloat { 12 + width * 3 }
 
 // MARK: - 캔버스
 
@@ -27,10 +27,11 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     var shapes: [Shape] = []
     private var current: [NSPoint] = []
     private(set) var editor: NSTextField?
+    private var editorWidth: CGFloat = 0  // 입력 시작 시점의 굵기 — 도중에 툴바를 만져도 안 흔들리게
 
     var tool: Tool = .pen
     var inkColor: NSColor = .systemRed
-    var lineWidth: CGFloat = 4
+    var lineWidth: CGFloat = brushWidths[1]
 
     override var acceptsFirstResponder: Bool { true }
     // 다른 앱이 활성 상태일 때 첫 클릭이 '앱 활성화'로 먹히지 않게 함 — 없으면 첫 획이 통째로 사라진다
@@ -42,7 +43,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         switch tool {
         case .pen: current.append(p)
         case .arrow, .rect: current = [current[0], p]  // 시작점 고정, 끝점만 갱신
-        case .text: break  // 텍스트는 드래그 개념이 없음
+        case .text, .eraser: break  // 그리는 도구가 아님
         }
         needsDisplay = true
     }
@@ -59,6 +60,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     // MARK: 텍스트 — 클릭한 자리에 입력 필드를 띄우고, 엔터/포커스 이탈 시 도형으로 확정
     func beginText(at p: NSPoint) {
         commitText()
+        editorWidth = lineWidth
         let size = fontSize(for: lineWidth)
         let f = NSTextField(frame: NSRect(x: p.x, y: p.y, width: 320, height: size * 1.5))
         f.font = .boldSystemFont(ofSize: size)
@@ -78,12 +80,11 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         guard let f = editor else { return }
         editor = nil  // 델리게이트 콜백이 다시 들어와도 재진입하지 않게 먼저 비운다
         let s = f.stringValue
-        let width = ((f.font?.pointSize ?? 16) - 8) / 2
         let color = f.textColor ?? inkColor
         let origin = f.frame.origin
         f.removeFromSuperview()
         if !s.isEmpty {
-            shapes.append(Shape(tool: .text, points: [origin], color: color, width: width, text: s))
+            shapes.append(Shape(tool: .text, points: [origin], color: color, width: editorWidth, text: s))
         }
         window?.makeFirstResponder(self)  // ESC 전체 지우기가 다시 캔버스로 오도록
         needsDisplay = true
@@ -91,15 +92,67 @@ final class CanvasView: NSView, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ n: Notification) { commitText() }
 
+    // MARK: 지우개 — 픽셀이 아니라 도형 단위로 지운다 (도형 목록만 들고 있는 구조라 그게 자연스럽다)
+    var eraserRadius: CGFloat { max(14, lineWidth * 1.5) }
+
+    func erase(at p: NSPoint) {
+        let before = shapes.count
+        shapes.removeAll { hits($0, at: p) }
+        if shapes.count != before { needsDisplay = true }
+    }
+
+    private func hits(_ s: Shape, at p: NSPoint) -> Bool {
+        let tol = eraserRadius + s.width / 2
+        guard let first = s.points.first, let last = s.points.last else { return false }
+        switch s.tool {
+        case .pen, .arrow:
+            return zip(s.points, s.points.dropFirst()).contains { distance(from: p, toSegment: $0, $1) <= tol }
+        case .rect:
+            // 테두리만 그려지므로 안쪽을 훑어도 안 지워지게 네 변으로 따진다
+            let r = NSRect(x: min(first.x, last.x), y: min(first.y, last.y),
+                           width: abs(last.x - first.x), height: abs(last.y - first.y))
+            let corners = [NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.maxX, y: r.minY),
+                           NSPoint(x: r.maxX, y: r.maxY), NSPoint(x: r.minX, y: r.maxY)]
+            return (0..<4).contains { distance(from: p, toSegment: corners[$0], corners[($0 + 1) % 4]) <= tol }
+        case .text:
+            let attrs = [NSAttributedString.Key.font: NSFont.boldSystemFont(ofSize: fontSize(for: s.width))]
+            let size = ((s.text ?? "") as NSString).size(withAttributes: attrs)
+            return NSRect(origin: first, size: size).insetBy(dx: -tol, dy: -tol).contains(p)
+        case .eraser:
+            return false
+        }
+    }
+
+    private func distance(from p: NSPoint, toSegment a: NSPoint, _ b: NSPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len2 = dx * dx + dy * dy
+        guard len2 > 0 else { return hypot(p.x - a.x, p.y - a.y) }
+        let t = min(1, max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+    }
+
     override func mouseDown(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
-        if tool == .text { beginText(at: p) } else { begin(at: p) }
+        switch tool {
+        case .text: beginText(at: p)
+        case .eraser: erase(at: p)
+        default: begin(at: p)
+        }
     }
     override func mouseDragged(with e: NSEvent) {
-        guard tool != .text else { return }
-        extend(to: convert(e.locationInWindow, from: nil))
+        let p = convert(e.locationInWindow, from: nil)
+        switch tool {
+        case .text: break
+        case .eraser: erase(at: p)
+        default: extend(to: p)
+        }
     }
-    override func mouseUp(with e: NSEvent) { if tool != .text { end() } }
+    override func mouseUp(with e: NSEvent) {
+        switch tool {
+        case .text, .eraser: break
+        default: end()
+        }
+    }
 
     override func keyDown(with e: NSEvent) {
         if e.keyCode == UInt16(kVK_Escape) { clear() } else { super.keyDown(with: e) }
@@ -138,6 +191,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
                 .font: NSFont.boldSystemFont(ofSize: fontSize(for: s.width)),
                 .foregroundColor: s.color,
             ])
+        case .eraser:
+            break  // 지우개는 도형으로 남지 않는다
         }
     }
 
@@ -199,7 +254,7 @@ final class Toolbar: NSObject {
     private let canvas: CanvasView
     private var toolButtons: [Tool: ToolbarButton] = [:]
     private var colorButton: NSButton!
-    private var sizeButton: ToolbarButton!
+    private var sizeButtons: [ToolbarButton] = []
 
     // 색상 패널 안의 "형광펜" 커스텀 팔레트로 들어감 — 툴바에는 스와치 무더기 대신 색상 버튼 하나만 둔다
     private let presetColors: [(name: String, color: NSColor)] = [
@@ -229,15 +284,15 @@ final class Toolbar: NSObject {
         let arrow = makeToolButton(.arrow, symbol: "arrow.up.right", tip: "화살표")
         let rect = makeToolButton(.rect, symbol: "square", tip: "사각형")
         let text = makeToolButton(.text, symbol: "textformat", tip: "텍스트")
+        let eraser = makeToolButton(.eraser, symbol: "eraser", tip: "지우개 (닿는 것만 지움 · 전체는 ESC)")
         toolButtons[.pen]?.isSelected = true
 
         let colorControl = makeColorControl()
-        let sizeControl = makeSizeControl()
 
-        let stack = NSStackView(views: [pen, arrow, rect, text, separator(), colorControl, separator(), sizeControl])
+        let stack = NSStackView(views: [pen, arrow, rect, text, eraser, separator(), colorControl, separator()] + makeSizeButtons())
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 14
+        stack.spacing = 10  // 버튼이 8개로 늘어 세로가 길어진 만큼 간격을 좁힘
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 10, bottom: 16, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
@@ -323,29 +378,27 @@ final class Toolbar: NSObject {
         colorButton.layer?.backgroundColor = sender.color.cgColor
     }
 
-    // 슬라이더 대신 토글 — 누를 때마다 다음 굵기로 돌고, 버튼 안 점 크기로 현재 값을 보여준다
-    private func makeSizeControl() -> ToolbarButton {
-        let b = ToolbarButton(frame: .zero)
-        b.target = self
-        b.action = #selector(sizeTapped)
-        b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: 36).isActive = true
-        b.heightAnchor.constraint(equalToConstant: 36).isActive = true
-        sizeButton = b
-        updateSizeButton()
-        return b
+    // 굵기는 버튼 한 줄씩 — 순환 토글은 원하는 값까지 여러 번 눌러야 해서 바로 고르게 바꿨다
+    private func makeSizeButtons() -> [ToolbarButton] {
+        sizeButtons = brushWidths.enumerated().map { i, w in
+            let b = ToolbarButton(frame: .zero)
+            b.image = dotImage(diameter: min(w + 4, 22))
+            b.tag = i
+            b.target = self
+            b.action = #selector(sizeTapped(_:))
+            b.toolTip = "굵기 \(Int(w))"
+            b.isSelected = (w == canvas.lineWidth)
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 36).isActive = true
+            return b
+        }
+        return sizeButtons
     }
 
-    @objc private func sizeTapped() {
-        let i = brushWidths.firstIndex(of: canvas.lineWidth) ?? 0
-        canvas.lineWidth = brushWidths[(i + 1) % brushWidths.count]
-        updateSizeButton()
-    }
-
-    private func updateSizeButton() {
-        let w = canvas.lineWidth
-        sizeButton.image = dotImage(diameter: w + 5)  // 2pt 점은 눌러야 할 표적으로 너무 작아 살짝 키움
-        sizeButton.toolTip = "굵기 \(Int(w)) — 눌러서 변경"
+    @objc private func sizeTapped(_ sender: NSButton) {
+        canvas.lineWidth = brushWidths[sender.tag]
+        for (i, b) in sizeButtons.enumerated() { b.isSelected = (i == sender.tag) }
     }
 
     private func dotImage(diameter d: CGFloat) -> NSImage {
@@ -533,6 +586,19 @@ func runSelfTest() -> Never {
     check(v.shapes.count == 1 && v.shapes[0].tool == .arrow, "화살표 도구로 도형 1개 확정")
     check(inkPixels() > 20, "화살표가 보임")
     v.clear()
+
+    v.tool = .pen
+    v.inkColor = .systemRed
+    v.lineWidth = 8
+    v.begin(at: NSPoint(x: 20, y: 20)); v.extend(to: NSPoint(x: 180, y: 180)); v.end()
+    v.begin(at: NSPoint(x: 20, y: 180)); v.extend(to: NSPoint(x: 60, y: 180)); v.end()
+    v.tool = .eraser
+    v.erase(at: NSPoint(x: 190, y: 20))
+    check(v.shapes.count == 2, "빈 곳을 지워도 도형은 그대로")
+    v.erase(at: NSPoint(x: 100, y: 100))
+    check(v.shapes.count == 1, "선 위를 지우면 그 도형만 사라짐")
+    v.erase(at: NSPoint(x: 40, y: 180))
+    check(v.shapes.isEmpty && inkPixels() == 0, "남은 도형도 지워짐")
 
     v.tool = .text
     v.inkColor = .systemRed

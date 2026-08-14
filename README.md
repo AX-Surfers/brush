@@ -8,7 +8,7 @@ macOS 13 이상, 애플 실리콘 / 인텔 모두 지원. 권한 설정은 필�
 
 ### 방법 1 — 내려받기
 
-[릴리스](https://github.com/kimsr96/brush/releases/latest)에서 `Brush.zip` 을 받아
+[릴리스](https://github.com/AX-Surfers/brush/releases/latest)에서 `Brush.zip` 을 받아
 압축을 풀고 `Brush.app` 을 `/응용 프로그램` 으로 옮깁니다.
 
 인터넷에서 받은 앱이라 **첫 실행 때 한 번** macOS가 막습니다. Apple에 등록비를 내고
@@ -29,7 +29,7 @@ xattr -dr com.apple.quarantine /Applications/Brush.app
 Xcode Command Line Tools (`xcode-select --install`) 만 있으면 됩니다.
 
 ```sh
-git clone https://github.com/kimsr96/brush.git && cd brush && ./build.sh && open Brush.app
+git clone https://github.com/AX-Surfers/brush.git && cd brush && ./build.sh && open Brush.app
 ```
 
 메뉴바에 ✏️ 가 생기면 실행 중입니다. 로그인 시 자동 실행하려면
@@ -44,11 +44,14 @@ git clone https://github.com/kimsr96/brush.git && cd brush && ./build.sh && open
 | `ESC` | 전체 지우기 (브러시는 켜진 채 유지) |
 
 브러시를 켜면 화면 왼쪽에 작은 툴바가 함께 뜹니다. 위에서부터 펜 / 화살표 / 사각형 /
-텍스트 도구 버튼, 색상 버튼, 굵기 버튼 순서이며 드래그로 옮길 수 있습니다.
+텍스트 / 지우개 도구 버튼, 색상 버튼, 굵기 버튼 4개(4 · 8 · 14 · 22) 순서이며 드래그로
+옮길 수 있습니다. 굵기는 원하는 버튼을 바로 누르면 되고, 선택된 것이 강조 표시됩니다.
 
-굵기 버튼은 누를 때마다 2 → 4 → 8 → 14 로 순환하고, 버튼 안 점 크기가 현재 값입니다.
-텍스트 도구로는 화면을 클릭한 자리에 바로 입력하고 `Enter` 로 확정합니다(글자 크기도
-굵기 버튼을 따릅니다).
+지우개는 픽셀이 아니라 **도형 단위**로 지웁니다 — 지나간 자리에 닿는 선·도형·텍스트가
+통째로 사라집니다. 지우는 범위는 굵기 버튼을 따릅니다. 전부 지우려면 `ESC`.
+
+텍스트 도구로는 화면을 클릭한 자리에 바로 입력하고 `Enter` 로 확정합니다. 글자 크기도
+굵기 버튼을 따라갑니다(기본 36pt, 최대 78pt).
 
 브러시가 켜져 있는 동안에는 화면 아래 앱을 클릭할 수 없습니다(그리기 전용).
 클릭이 필요하면 `⌥Z`로 끄면 되고, 끌 때 그림은 지워집니다.
