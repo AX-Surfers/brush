@@ -4,7 +4,22 @@ import Carbon.HIToolbox
 // MARK: - 도구
 
 enum Tool: Int {
-    case pen, arrow, rect, text, eraser
+    case pen, arrow, rect, text, eraser, click
+}
+
+extension Tool {
+    // 캔버스에 포커스가 있을 때 쓰는 한 글자 단축키
+    init?(shortcut s: String) {
+        switch s.lowercased() {
+        case "p": self = .pen
+        case "a": self = .arrow
+        case "r": self = .rect
+        case "t": self = .text
+        case "e": self = .eraser
+        case "c": self = .click
+        default: return nil
+        }
+    }
 }
 
 struct Shape {
@@ -33,6 +48,48 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     var inkColor: NSColor = .systemRed
     var lineWidth: CGFloat = brushWidths[1]
 
+    // 단축키로 도구를 바꿀 때 툴바 하이라이트/클릭 통과까지 같이 손봐야 해서 앱에 넘긴다
+    var onToolShortcut: ((Tool) -> Void)?
+
+    // MARK: 실행취소 — 도형 배열을 통째로 스냅샷한다.
+    // 도형 수가 많지 않은 앱이라 역연산을 도구별로 짜는 것보다 이쪽이 단순하고 안전하다.
+    private var undoStack: [[Shape]] = []
+    private var redoStack: [[Shape]] = []
+    private let historyLimit = 100
+    private var eraseStrokeSnapshotted = false
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    private func snapshot() {
+        undoStack.append(shapes)
+        if undoStack.count > historyLimit { undoStack.removeFirst() }
+        redoStack.removeAll()
+    }
+
+    func undo() {
+        guard let prev = undoStack.popLast() else { return }
+        redoStack.append(shapes)
+        shapes = prev
+        needsDisplay = true
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(shapes)
+        shapes = next
+        needsDisplay = true
+    }
+
+    // 브러시를 끌 때 호출 — 사라진 그림이 다음 세션에서 되살아나면 곤란하다
+    func resetHistory() { undoStack = []; redoStack = [] }
+
+    // 클릭 도구: 오버레이가 마우스를 그대로 통과시켜 브러시를 켠 채로 밑 앱을 쓴다
+    func applyClickThrough() {
+        window?.ignoresMouseEvents = (tool == .click)
+        window?.invalidateCursorRects(for: self)
+    }
+
     override var acceptsFirstResponder: Bool { true }
     // 다른 앱이 활성 상태일 때 첫 클릭이 '앱 활성화'로 먹히지 않게 함 — 없으면 첫 획이 통째로 사라진다
     override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
@@ -43,17 +100,21 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         switch tool {
         case .pen: current.append(p)
         case .arrow, .rect: current = [current[0], p]  // 시작점 고정, 끝점만 갱신
-        case .text, .eraser: break  // 그리는 도구가 아님
+        case .text, .eraser, .click: break  // 그리는 도구가 아님
         }
         needsDisplay = true
     }
     func end() {
-        if current.count > 1 { shapes.append(Shape(tool: tool, points: current, color: inkColor, width: lineWidth)) }
+        if current.count > 1 {
+            snapshot()
+            shapes.append(Shape(tool: tool, points: current, color: inkColor, width: lineWidth))
+        }
         current = []
         needsDisplay = true
     }
     func clear() {
         editor?.removeFromSuperview(); editor = nil
+        if !shapes.isEmpty { snapshot() }  // ESC로 통째로 날린 것도 ⌘Z로 되돌릴 수 있게
         shapes = []; current = []; needsDisplay = true
     }
 
@@ -84,6 +145,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         let origin = f.frame.origin
         f.removeFromSuperview()
         if !s.isEmpty {
+            snapshot()
             shapes.append(Shape(tool: .text, points: [origin], color: color, width: editorWidth, text: s))
         }
         window?.makeFirstResponder(self)  // ESC 전체 지우기가 다시 캔버스로 오도록
@@ -95,10 +157,19 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     // MARK: 지우개 — 픽셀이 아니라 도형 단위로 지운다 (도형 목록만 들고 있는 구조라 그게 자연스럽다)
     var eraserRadius: CGFloat { max(14, lineWidth * 1.5) }
 
+    // 지우개는 드래그 한 번이 실행취소 한 번 — 지나간 도형마다 스냅샷을 쌓으면 ⌘Z를 수십 번 눌러야 한다
+    func beginEraseStroke() { eraseStrokeSnapshotted = false }
+
     func erase(at p: NSPoint) {
-        let before = shapes.count
-        shapes.removeAll { hits($0, at: p) }
-        if shapes.count != before { needsDisplay = true }
+        var kept = shapes
+        kept.removeAll { hits($0, at: p) }
+        guard kept.count != shapes.count else { return }
+        if !eraseStrokeSnapshotted {
+            snapshot()
+            eraseStrokeSnapshotted = true
+        }
+        shapes = kept
+        needsDisplay = true
     }
 
     private func hits(_ s: Shape, at p: NSPoint) -> Bool {
@@ -118,7 +189,7 @@ final class CanvasView: NSView, NSTextFieldDelegate {
             let attrs = [NSAttributedString.Key.font: NSFont.boldSystemFont(ofSize: fontSize(for: s.width))]
             let size = ((s.text ?? "") as NSString).size(withAttributes: attrs)
             return NSRect(origin: first, size: size).insetBy(dx: -tol, dy: -tol).contains(p)
-        case .eraser:
+        case .eraser, .click:
             return false
         }
     }
@@ -135,30 +206,53 @@ final class CanvasView: NSView, NSTextFieldDelegate {
         let p = convert(e.locationInWindow, from: nil)
         switch tool {
         case .text: beginText(at: p)
-        case .eraser: erase(at: p)
+        case .eraser: beginEraseStroke(); erase(at: p)
+        case .click: break  // 실제로는 ignoresMouseEvents로 이미 통과된다
         default: begin(at: p)
         }
     }
     override func mouseDragged(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         switch tool {
-        case .text: break
+        case .text, .click: break
         case .eraser: erase(at: p)
         default: extend(to: p)
         }
     }
     override func mouseUp(with e: NSEvent) {
         switch tool {
-        case .text, .eraser: break
+        case .text, .eraser, .click: break
         default: end()
         }
     }
 
     override func keyDown(with e: NSEvent) {
-        if e.keyCode == UInt16(kVK_Escape) { clear() } else { super.keyDown(with: e) }
+        if e.keyCode == UInt16(kVK_Escape) { clear(); return }
+        // 텍스트 입력 중에는 필드가 first responder라 여기까지 오지 않는다 — 글자 단축키가 입력을 먹지 않음
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if mods.isDisjoint(with: [.command, .control, .option]),
+           let t = Tool(shortcut: e.charactersIgnoringModifiers ?? "") {
+            onToolShortcut?(t)
+            return
+        }
+        super.keyDown(with: e)
     }
 
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    // 메뉴 없이 도는 앱이라 ⌘Z / ⇧⌘Z를 직접 받는다. 텍스트 입력 중이면 필드 자체 실행취소가 먼저다.
+    override func performKeyEquivalent(with e: NSEvent) -> Bool {
+        guard editor == nil else { return super.performKeyEquivalent(with: e) }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard mods.contains(.command), e.charactersIgnoringModifiers?.lowercased() == "z" else {
+            return super.performKeyEquivalent(with: e)
+        }
+        mods.contains(.shift) ? redo() : undo()
+        return true
+    }
+
+    override func resetCursorRects() {
+        guard tool != .click else { return }  // 클릭 모드에서는 밑 앱 커서를 그대로 둔다
+        addCursorRect(bounds, cursor: .crosshair)
+    }
 
     // ponytail: 점 하나 찍힐 때마다 전체 다시 그림. 선이 수백 개로 늘어 버벅이면 CAShapeLayer로.
     override func draw(_ dirty: NSRect) {
@@ -191,8 +285,8 @@ final class CanvasView: NSView, NSTextFieldDelegate {
                 .font: NSFont.boldSystemFont(ofSize: fontSize(for: s.width)),
                 .foregroundColor: s.color,
             ])
-        case .eraser:
-            break  // 지우개는 도형으로 남지 않는다
+        case .eraser, .click:
+            break  // 도형으로 남지 않는다
         }
     }
 
@@ -251,6 +345,9 @@ final class ToolbarPanel: NSPanel {
 
 final class Toolbar: NSObject {
     let panel: ToolbarPanel
+    // 도구 선택은 앱이 처리한다 — 툴바 하이라이트 말고도 클릭 통과/포커스까지 같이 손봐야 하기 때문
+    var onSelectTool: ((Tool) -> Void)?
+    var onUndo: (() -> Void)?
     private let canvas: CanvasView
     private var toolButtons: [Tool: ToolbarButton] = [:]
     private var colorButton: NSButton!
@@ -280,19 +377,22 @@ final class Toolbar: NSObject {
     }
 
     private func buildUI() {
-        let pen = makeToolButton(.pen, symbol: "pencil", tip: "펜")
-        let arrow = makeToolButton(.arrow, symbol: "arrow.up.right", tip: "화살표")
-        let rect = makeToolButton(.rect, symbol: "square", tip: "사각형")
-        let text = makeToolButton(.text, symbol: "textformat", tip: "텍스트")
-        let eraser = makeToolButton(.eraser, symbol: "eraser", tip: "지우개 (닿는 것만 지움 · 전체는 ESC)")
+        let pen = makeToolButton(.pen, symbol: "pencil", tip: "펜 · P / ⌥1")
+        let arrow = makeToolButton(.arrow, symbol: "arrow.up.right", tip: "화살표 · A / ⌥2")
+        let rect = makeToolButton(.rect, symbol: "square", tip: "사각형 · R / ⌥3")
+        let text = makeToolButton(.text, symbol: "textformat", tip: "텍스트 · T / ⌥4")
+        let eraser = makeToolButton(.eraser, symbol: "eraser", tip: "지우개 · E / ⌥5 (닿는 것만 지움 · 전체는 ESC)")
+        let click = makeToolButton(.click, symbol: "cursorarrow", tip: "클릭 · C / ⌥6 (브러시를 켠 채로 밑 화면 클릭)")
         toolButtons[.pen]?.isSelected = true
+
+        let undo = makeUndoButton()
 
         let colorControl = makeColorControl()
 
-        let stack = NSStackView(views: [pen, arrow, rect, text, eraser, separator(), colorControl, separator()] + makeSizeButtons())
+        let stack = NSStackView(views: [pen, arrow, rect, text, eraser, click, separator(), undo, separator(), colorControl, separator()] + makeSizeButtons())
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 10  // 버튼이 8개로 늘어 세로가 길어진 만큼 간격을 좁힘
+        stack.spacing = 8  // 버튼이 11개로 늘어 세로가 길어진 만큼 간격을 좁힘
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 10, bottom: 16, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
@@ -357,10 +457,30 @@ final class Toolbar: NSObject {
 
     @objc private func toolTapped(_ sender: NSButton) {
         guard let tool = Tool(rawValue: sender.tag) else { return }
-        canvas.commitText()  // 입력 중이던 텍스트를 도구 바꾸며 잃지 않게
-        canvas.tool = tool
+        onSelectTool?(tool)
+    }
+
+    // 단축키로 바뀐 도구도 툴바에 그대로 비치게 — 선택 표시는 한 곳에서만 갱신한다
+    func select(_ tool: Tool) {
         for (t, btn) in toolButtons { btn.isSelected = (t == tool) }
     }
+
+    // 클릭 모드에서는 ⌘Z가 밑 앱으로 가버리므로 툴바에도 실행취소를 둔다
+    private func makeUndoButton() -> ToolbarButton {
+        let image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: "실행취소") ?? NSImage()
+        image.isTemplate = true
+        let b = ToolbarButton(frame: .zero)
+        b.image = image
+        b.target = self
+        b.action = #selector(undoTapped)
+        b.toolTip = "실행취소 · ⌘Z (다시 실행 ⇧⌘Z)"
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        return b
+    }
+
+    @objc private func undoTapped() { onUndo?() }
 
     @objc private func openColorPanel() {
         let cp = NSColorPanel.shared
@@ -449,6 +569,9 @@ final class BrushApp: NSObject, NSApplicationDelegate {
 
         toolbar = Toolbar(canvas: canvas)
         toolbar.panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        toolbar.onSelectTool = { [weak self] in self?.selectTool($0) }
+        toolbar.onUndo = { [weak self] in self?.canvas.undo() }
+        canvas.onToolShortcut = { [weak self] in self?.selectTool($0) }
 
         setUpStatusItem()
         registerHotKey()
@@ -464,6 +587,7 @@ final class BrushApp: NSObject, NSApplicationDelegate {
         statusItem.button?.title = "✏️"
         let menu = NSMenu()
         menu.addItem(withTitle: "브러시 켜기 / 끄기  (⌥Z)", action: #selector(toggleFromMenu), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "실행취소  (⌘Z)", action: #selector(undoFromMenu), keyEquivalent: "").target = self
         menu.addItem(withTitle: "전체 지우기  (ESC)", action: #selector(clearFromMenu), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -472,6 +596,22 @@ final class BrushApp: NSObject, NSApplicationDelegate {
 
     @objc private func toggleFromMenu() { toggle() }
     @objc private func clearFromMenu() { canvas.clear() }
+    @objc private func undoFromMenu() { canvas.undo() }
+
+    // 도구 전환의 단일 통로 — 툴바 클릭 / 캔버스 글자 단축키 / 전역 ⌥숫자 단축키가 모두 여기로 온다
+    func selectTool(_ tool: Tool) {
+        canvas.commitText()  // 입력 중이던 텍스트를 도구 바꾸며 잃지 않게
+        canvas.tool = tool
+        canvas.applyClickThrough()
+        toolbar.select(tool)
+        if tool != .click {
+            // 클릭 모드에서 다른 앱으로 넘어간 포커스를 다시 가져와야 ESC·⌘Z·글자 단축키가 산다
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            window.makeFirstResponder(canvas)
+        }
+    }
 
     func toggle() {
         isOn ? turnOff() : turnOn()
@@ -486,13 +626,17 @@ final class BrushApp: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
         window.makeFirstResponder(canvas)
+        canvas.applyClickThrough()
         toolbar.panel.orderFrontRegardless()
+        registerToolHotKeys()
         isOn = true
         statusItem.button?.title = "🖍️"
     }
 
     private func turnOff() {
         canvas.clear()
+        canvas.resetHistory()  // 지워진 그림이 다음에 켤 때 ⌘Z로 되살아나면 곤란하다
+        unregisterToolHotKeys()
         window.orderOut(nil)
         toolbar.panel.orderOut(nil)
         isOn = false
@@ -504,12 +648,56 @@ final class BrushApp: NSObject, NSApplicationDelegate {
     private let hotKeyCode = UInt32(kVK_ANSI_Z)
     private let hotKeyModifiers = UInt32(optionKey)
 
+    // 브러시가 켜져 있는 동안에만 사는 단축키들 — 클릭 모드에서 우리 창이 키를 놓쳐도 도구를 되돌릴 수 있어야 한다.
+    // 항상 물고 있으면 다른 앱에서 ⌥1(¡) 같은 입력을 통째로 막아버리므로 켤 때 등록하고 끌 때 푼다.
+    private let toolHotKeys: [(tool: Tool, code: UInt32)] = [
+        (.pen, UInt32(kVK_ANSI_1)), (.arrow, UInt32(kVK_ANSI_2)), (.rect, UInt32(kVK_ANSI_3)),
+        (.text, UInt32(kVK_ANSI_4)), (.eraser, UInt32(kVK_ANSI_5)), (.click, UInt32(kVK_ANSI_6)),
+    ]
+    private var sessionHotKeys: [EventHotKeyRef] = []
+    private let signature = OSType(0x42525348 /* 'BRSH' */)
+    private let toggleHotKeyID: UInt32 = 1
+    private let undoHotKeyID: UInt32 = 2
+    private let firstToolHotKeyID: UInt32 = 10
+
     private func registerHotKey() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), hotKeyCallback, 1, &spec, nil, nil)
-        let id = EventHotKeyID(signature: OSType(0x42525348 /* 'BRSH' */), id: 1)
+        let id = EventHotKeyID(signature: signature, id: toggleHotKeyID)
         let status = RegisterEventHotKey(hotKeyCode, hotKeyModifiers, id, GetApplicationEventTarget(), 0, &hotKey)
         if status != noErr { warnHotKeyTaken(status) }
+    }
+
+    private func registerToolHotKeys() {
+        guard sessionHotKeys.isEmpty else { return }
+        var specs: [(UInt32, UInt32, UInt32)] = toolHotKeys.enumerated().map {
+            ($1.code, hotKeyModifiers, firstToolHotKeyID + UInt32($0))
+        }
+        // ⌥⌘Z — 클릭 모드에서는 ⌘Z가 밑 앱 것이 되므로 별도로 하나 둔다
+        specs.append((UInt32(kVK_ANSI_Z), hotKeyModifiers | UInt32(cmdKey), undoHotKeyID))
+        for (code, mods, id) in specs {
+            var ref: EventHotKeyRef?
+            let hotKeyID = EventHotKeyID(signature: signature, id: id)
+            if RegisterEventHotKey(code, mods, hotKeyID, GetApplicationEventTarget(), 0, &ref) == noErr, let ref {
+                sessionHotKeys.append(ref)
+            }
+        }
+    }
+
+    private func unregisterToolHotKeys() {
+        for ref in sessionHotKeys { UnregisterEventHotKey(ref) }
+        sessionHotKeys = []
+    }
+
+    func handleHotKey(id: UInt32) {
+        switch id {
+        case toggleHotKeyID: toggle()
+        case undoHotKeyID where isOn: canvas.undo()
+        default:
+            let index = Int(id) - Int(firstToolHotKeyID)
+            guard isOn, toolHotKeys.indices.contains(index) else { return }
+            selectTool(toolHotKeys[index].tool)
+        }
     }
 
     private func warnHotKeyTaken(_ status: OSStatus) {
@@ -524,7 +712,10 @@ final class BrushApp: NSObject, NSApplicationDelegate {
 private var sharedApp: BrushApp?
 
 private func hotKeyCallback(_ next: EventHandlerCallRef?, _ event: EventRef?, _ userData: UnsafeMutableRawPointer?) -> OSStatus {
-    sharedApp?.toggle()
+    var id = EventHotKeyID()
+    GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                      nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+    sharedApp?.handleHotKey(id: id.id)
     return noErr
 }
 
@@ -593,12 +784,16 @@ func runSelfTest() -> Never {
     v.begin(at: NSPoint(x: 20, y: 20)); v.extend(to: NSPoint(x: 180, y: 180)); v.end()
     v.begin(at: NSPoint(x: 20, y: 180)); v.extend(to: NSPoint(x: 60, y: 180)); v.end()
     v.tool = .eraser
+    v.beginEraseStroke()
     v.erase(at: NSPoint(x: 190, y: 20))
     check(v.shapes.count == 2, "빈 곳을 지워도 도형은 그대로")
     v.erase(at: NSPoint(x: 100, y: 100))
     check(v.shapes.count == 1, "선 위를 지우면 그 도형만 사라짐")
     v.erase(at: NSPoint(x: 40, y: 180))
     check(v.shapes.isEmpty && inkPixels() == 0, "남은 도형도 지워짐")
+    v.undo()
+    check(v.shapes.count == 2, "지우개 드래그 한 번은 ⌘Z 한 번으로 통째로 복구")
+    v.clear()
 
     v.tool = .text
     v.inkColor = .systemRed
@@ -620,6 +815,60 @@ func runSelfTest() -> Never {
     v.lineWidth = 10
     v.begin(at: NSPoint(x: 10, y: 10)); v.extend(to: NSPoint(x: 190, y: 190)); v.end()
     check(v.shapes[0].color == .systemBlue && v.shapes[0].width == 10, "색상/굵기 변경이 새 도형에 반영됨")
+
+    // MARK: 실행취소 / 다시 실행
+    v.clear()
+    v.resetHistory()
+    v.tool = .pen
+    v.inkColor = .systemRed
+    v.lineWidth = 8
+
+    v.undo()
+    check(v.shapes.isEmpty, "되돌릴 게 없으면 ⌘Z는 아무 일도 안 함")
+
+    v.begin(at: NSPoint(x: 20, y: 20)); v.extend(to: NSPoint(x: 180, y: 180)); v.end()
+    v.begin(at: NSPoint(x: 20, y: 180)); v.extend(to: NSPoint(x: 180, y: 20)); v.end()
+    check(v.shapes.count == 2 && v.canUndo, "획 2개, 실행취소 가능")
+
+    v.undo()
+    check(v.shapes.count == 1, "⌘Z가 마지막 획만 되돌림")
+    v.undo()
+    check(v.shapes.isEmpty && inkPixels() == 0 && !v.canUndo, "⌘Z를 더 누르면 처음 상태")
+
+    v.redo()
+    check(v.shapes.count == 1, "⇧⌘Z로 다시 실행")
+    v.redo()
+    check(v.shapes.count == 2 && !v.canRedo, "다시 실행이 끝까지 감")
+
+    v.begin(at: NSPoint(x: 10, y: 100)); v.extend(to: NSPoint(x: 190, y: 100)); v.end()
+    check(!v.canRedo, "되돌린 뒤 새로 그리면 다시 실행 이력은 버려짐")
+
+    v.clear()
+    check(v.shapes.isEmpty, "ESC 전체 지우기")
+    v.undo()
+    check(v.shapes.count == 3, "ESC로 지운 것도 ⌘Z로 복구")
+
+    v.tool = .text
+    v.beginText(at: NSPoint(x: 10, y: 40))
+    v.editor?.stringValue = "취소될 글자"
+    v.commitText()
+    check(v.shapes.count == 4, "텍스트 확정")
+    v.undo()
+    check(v.shapes.count == 3, "확정된 텍스트도 ⌘Z로 되돌림")
+
+    v.resetHistory()
+    check(!v.canUndo && !v.canRedo, "브러시를 끄면 이력이 비워짐")
+
+    // MARK: 클릭 도구 — 그리지도, 지우지도 않는다
+    v.clear()
+    v.resetHistory()
+    v.tool = .click
+    v.begin(at: NSPoint(x: 20, y: 20))
+    v.extend(to: NSPoint(x: 180, y: 180))
+    v.end()
+    check(v.shapes.isEmpty && inkPixels() == 0 && !v.canUndo, "클릭 도구는 드래그해도 아무것도 안 남김")
+    check(Tool(shortcut: "c") == .click && Tool(shortcut: "P") == .pen && Tool(shortcut: "x") == nil,
+          "글자 단축키가 도구로 매핑됨")
 
     print(failures == 0 ? "\n셀프테스트 통과" : "\n실패 \(failures)건")
     exit(failures == 0 ? 0 : 1)
