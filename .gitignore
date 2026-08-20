@@ -5,3 +5,8 @@ Brush.zip
 .agents/
 skills-lock.json
 .claude/
+
+__pycache__/
+build/
+dist/
+*.spec

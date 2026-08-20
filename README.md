@@ -1,10 +1,13 @@
 # Brush — 화면 위 필기 오버레이
 
-강의 중 화면에 바로 선을 그어 시선을 잡아두는 macOS 도구.
+강의 중 화면에 바로 선을 그어 시선을 잡아두는 도구.
 
-macOS 13 이상, 애플 실리콘 / 인텔 모두 지원. 권한 설정은 필요 없습니다.
+- **macOS** — `Brush.swift` 네이티브 앱. macOS 13 이상, 애플 실리콘 / 인텔 모두 지원. 권한 설정 불필요.
+- **Windows** — `brush.py` (Python + Qt). 펜 · 화살표 · 사각형 · 텍스트 · 지우개와 색상 ·
+  굵기가 같습니다. 실행취소 · 클릭 도구 · 글자 단축키는 아직 macOS 판에만 있습니다.
+  Linux · macOS 에서도 그대로 돕니다.
 
-## 설치
+## 설치 (macOS)
 
 ### 방법 1 — 내려받기
 
@@ -35,11 +38,33 @@ git clone https://github.com/AX-Surfers/brush.git && cd brush && ./build.sh && o
 메뉴바에 ✏️ 가 생기면 실행 중입니다. 로그인 시 자동 실행하려면
 시스템 설정 → 일반 → 로그인 항목에 `Brush.app` 추가.
 
+## 설치 (Windows)
+
+[Python 3.10 이상](https://www.python.org/downloads/windows/)이 필요합니다 (설치할 때
+"Add python.exe to PATH" 체크). PowerShell 에서:
+
+```
+py -m pip install PySide6
+py brush.py
+```
+
+콘솔 창 없이 띄우려면 `pythonw brush.py`, 로그인 시 자동 실행하려면 그 명령을 담은
+바로가기를 `Win+R` → `shell:startup` 폴더에 넣습니다.
+
+배포용 단일 실행 파일(`dist\Brush.exe`, Python 설치 없이 실행)이 필요하면:
+
+```
+py -m pip install pyinstaller
+py -m PyInstaller --noconsole --onefile --name Brush brush.py
+```
+
+작업 표시줄 알림 영역에 ✏️ 가 생기면 실행 중입니다 (아이콘 클릭으로도 켜고 끄기).
+
 ## 조작
 
 | 키 | 동작 |
 |---|---|
-| `⌥Z` | 브러시 켜기 / 끄기 (어느 앱에서든) |
+| `⌥Z` (Windows `Alt+Z`) | 브러시 켜기 / 끄기 (어느 앱에서든) |
 | 드래그 | 선택한 도구로 그리기 |
 | `⌘Z` / `⇧⌘Z` | 실행취소 / 다시 실행 |
 | `P` `A` `R` `T` `E` `C` | 펜 · 화살표 · 사각형 · 텍스트 · 지우개 · 클릭 |
@@ -50,6 +75,9 @@ git clone https://github.com/AX-Surfers/brush.git && cd brush && ./build.sh && o
 글자 단축키(`P`/`A`/...)와 `⌘Z`는 브러시 창에 포커스가 있을 때 동작합니다. 클릭 모드로
 넘어가면 키보드가 밑 앱 차지가 되므로 `⌥1`~`⌥6`, `⌥⌘Z` 를 쓰면 됩니다. 이 전역 단축키들은
 브러시가 켜져 있는 동안에만 등록되어 평소 다른 앱의 `⌥1` 입력을 막지 않습니다.
+
+Windows 판은 `Alt+Z` 와 `ESC` 두 개뿐입니다. 실행취소 · 클릭 도구 · 글자 단축키는 아직
+옮기지 않았고, 도구는 툴바 버튼으로 고릅니다.
 
 브러시를 켜면 화면 왼쪽에 작은 툴바가 함께 뜹니다. 위에서부터 펜 / 화살표 / 사각형 /
 텍스트 / 지우개 / 클릭 도구 버튼, 실행취소 버튼, 색상 버튼, 굵기 버튼 4개(4 · 8 · 14 · 22)
@@ -67,15 +95,26 @@ git clone https://github.com/AX-Surfers/brush.git && cd brush && ./build.sh && o
 **클릭 도구**를 고르면 그린 것은 화면에 남겨둔 채 마우스가 오버레이를 통과해 밑 앱을 그대로
 쓸 수 있습니다. 다시 그리려면 `⌥1`(펜) 등으로 돌아오면 됩니다. 브러시를 완전히 끌 때는
 `⌥Z`이고, 끌 때 그림은 지워집니다.
-메뉴바 ✏️ 아이콘에서도 켜기/끄기·지우기·종료를 할 수 있습니다.
+메뉴바(Windows 는 알림 영역) ✏️ 아이콘에서도 켜기/끄기·지우기·종료를 할 수 있습니다.
 
-단축키를 바꾸려면 `Brush.swift`의 `hotKeyCode` / `hotKeyModifiers` 두 줄만 고치고 `./build.sh`.
-다른 앱이 이미 그 키를 쓰고 있으면 메뉴바 아이콘이 ⚠️ 로 바뀌어 알려줍니다.
+단축키를 바꾸려면 macOS 는 `Brush.swift` 의 `hotKeyCode` / `hotKeyModifiers` 두 줄을 고치고
+`./build.sh`, Windows 는 `brush.py` 의 `MOD_ALT` / `VK_Z` 두 줄을 고칩니다.
+다른 앱이 이미 그 키를 쓰고 있으면 아이콘이 ⚠️ 로 바뀌어 알려줍니다.
+
+Windows 외의 플랫폼에서 `brush.py` 를 돌리면 전역 단축키는 잡히지 않고 트레이 아이콘으로만
+켜고 끕니다 (macOS 는 네이티브 앱을 쓰면 됩니다).
 
 ## 구조
 
-- `Brush.swift` — 전부. 오버레이 창 + 캔버스 + 전역 단축키 + 셀프테스트
+- `Brush.swift` — macOS 전부. 오버레이 창 + 캔버스 + 전역 단축키 + 셀프테스트
 - `build.sh` — 두 아키텍처로 컴파일해 하나로 합치고 `Brush.app` 번들 생성 + 셀프테스트.
   `./build.sh --zip` 이면 배포용 `Brush.zip` 까지
+- `brush.py` — Windows 판 전부. 같은 구조를 PySide6 로 옮긴 이식판 (도형 목록 · 지우개
+  판정 · 굵기/텍스트 크기 규칙이 Swift 쪽과 동일). 실행취소 · 클릭 도구는 아직 미이식
 
-`./Brush.app/Contents/MacOS/Brush --selftest` 로 그리기 로직만 따로 검증 가능.
+셀프테스트는 두 판 모두 같은 항목을 검사합니다.
+
+```sh
+./Brush.app/Contents/MacOS/Brush --selftest   # macOS
+py brush.py --selftest                        # Windows
+```
