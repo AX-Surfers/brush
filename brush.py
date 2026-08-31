@@ -1156,20 +1156,29 @@ class SettingsDialog(QDialog):
             magnification=self.zoom.value(),
         )
 
-    def _apply(self):
+    def _try_apply(self, notify=True):
+        """현재 편집 내용을 적용하고 (성공 여부, 실패 사유)를 돌려준다."""
         if self._applying:
-            return False
+            return False, None
         self._applying = True
         try:
             value = self._value()
             ok, error = self.apply_callback(value)
         finally:
             self._applying = False
-        if not ok:
-            QMessageBox.warning(self, "단축키를 적용할 수 없음", error)
-        else:
+        if ok:
             self._committed_shortcuts = dict(value.shortcuts)
-        return ok
+        elif notify:
+            QMessageBox.warning(self, "단축키를 적용할 수 없음", error)
+        return ok, error
+
+    def _apply(self):
+        return self._try_apply()[0]
+
+    def _revert_shortcut_edits(self):
+        """적용되지 않은 단축키 편집을 마지막으로 성공한 값으로 되돌린다."""
+        for action, edit in self.shortcut_edits.items():
+            edit.setKeySequence(QKeySequence(self._committed_shortcuts[action]))
 
     def _live_visual(self, _=None):
         if self.live_callback is None or self._applying:
@@ -1184,9 +1193,15 @@ class SettingsDialog(QDialog):
         ))
 
     def reject(self):
-        # 모든 변경은 즉시 적용되므로 닫을 때도 마지막 편집 내용을 검증한다.
-        if self._apply():
-            super().reject()
+        # 모든 변경은 즉시 적용되므로 닫을 때도 마지막 편집 내용을 검증한다. 다만 적용에
+        # 실패했다고 창을 붙잡아 두면 빠져나갈 길이 없으므로, 적용되지 않은 편집만 버리고
+        # 마지막으로 정상 적용된 단축키로 되돌린 뒤 닫는다. 실패 사유는 편집을 마칠 때
+        # 이미 경고로 알렸으므로 닫는 길목에서 다시 막지 않는다.
+        ok, _ = self._try_apply(notify=False)
+        if not ok:
+            self._revert_shortcut_edits()
+            self._try_apply(notify=False)
+        super().reject()
 
 
 # MARK: - 전역 단축키 — Windows RegisterHotKey를 한 곳에서 등록/해제한다
@@ -1978,6 +1993,33 @@ def run_selftest():
     check(settings_smoke.windowFlags() & Qt.WindowStaysOnTopHint,
           "전체 화면 오버레이 위에 환경설정 창이 표시됨")
     settings_smoke.close()
+
+    # 적용할 수 없는 단축키가 남아 있어도 환경설정 창에 갇히면 안 된다.
+    def strict_apply(value):
+        _, error = validate_shortcuts(value.shortcuts)
+        return error is None, error
+
+    stuck = SettingsDialog(Preferences(), strict_apply)
+    stuck.show()
+    stuck.shortcut_edits["pen"].setKeySequence(QKeySequence(DEFAULT_SHORTCUTS["click"]))
+    applied, reason = stuck._try_apply(notify=False)
+    check(not applied and reason, "중복 단축키는 적용을 거부하고 사유를 돌려줌")
+    stuck.reject()
+    check(not stuck.isVisible(),
+          "적용할 수 없는 단축키가 남아 있어도 환경설정 창을 닫을 수 있음")
+    check(stuck._value().shortcuts["pen"] == DEFAULT_SHORTCUTS["pen"],
+          "닫을 때 적용되지 않은 단축키 편집은 마지막 정상 값으로 되돌아감")
+    stuck.close()
+
+    # OS가 단축키 등록을 거부하는 경우(다른 앱이 선점)에도 같은 탈출구가 있어야 한다.
+    refused = SettingsDialog(Preferences(), lambda _: (False, "다른 앱이 사용 중입니다."))
+    refused.show()
+    refused.shortcut_edits["laser"].setKeySequence(QKeySequence("Ctrl+Alt+L"))
+    refused.reject()
+    check(not refused.isVisible() and
+          refused._value().shortcuts["laser"] == DEFAULT_SHORTCUTS["laser"],
+          "등록이 거부된 단축키도 직전 값으로 되돌리고 창을 닫음")
+    refused.close()
 
     print("\n셀프테스트 통과" if failures == 0 else "\n실패 %d건" % failures)
     return 0 if failures == 0 else 1
