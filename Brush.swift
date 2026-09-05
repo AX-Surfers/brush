@@ -52,6 +52,9 @@ struct Shortcut: Equatable {
         return result + (Shortcut.keyNames[keyCode] ?? "키코드 \(keyCode)")
     }
 
+    // ⌥를 누르고 있을 때 툴바에 겹쳐 띄우는 글자 — 수정키 기호를 뺀 키 이름만
+    var keyLabel: String { Shortcut.keyNames[keyCode] ?? "?" }
+
     var isValid: Bool {
         let allowed = UInt32(controlKey | optionKey | shiftKey | cmdKey)
         guard modifiers & ~allowed == 0, Shortcut.keyNames[keyCode] != nil else { return false }
@@ -1100,6 +1103,9 @@ private extension NSBezierPath {
 
 final class ToolbarButton: NSButton {
     var isSelected: Bool = false { didSet { updateAppearance() } }
+    // ⌥를 누르고 있는 동안만 채워지는 단축키 글자. 툴팁은 버튼마다 한참 머물러야 떠서
+    // "지금 뭘 누르면 되지"를 한눈에 못 준다
+    var badge: String? { didSet { if badge != oldValue { needsDisplay = true } } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -1114,6 +1120,22 @@ final class ToolbarButton: NSButton {
     private func updateAppearance() {
         layer?.backgroundColor = (isSelected ? NSColor.controlAccentColor : NSColor.white.withAlphaComponent(0.06)).cgColor
         contentTintColor = isSelected ? .white : NSColor.white.withAlphaComponent(0.8)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let badge, !badge.isEmpty else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+            .foregroundColor: NSColor.white,
+        ]
+        let text = badge as NSString
+        let size = text.size(withAttributes: attrs)
+        let box = NSRect(x: bounds.maxX - size.width - 6, y: bounds.minY + 2,
+                         width: size.width + 4, height: size.height + 1)
+        NSColor.black.withAlphaComponent(0.8).setFill()
+        NSBezierPath(roundedRect: box, xRadius: 3, yRadius: 3).fill()
+        text.draw(at: NSPoint(x: box.minX + 2, y: box.minY + 0.5), withAttributes: attrs)
     }
 }
 
@@ -1133,6 +1155,7 @@ final class Toolbar: NSObject {
     private var colorButton: NSButton!
     private var sizeButtons: [ToolbarButton] = []
     private var undoButton: ToolbarButton!
+    private var shortcuts: [ShortcutAction: Shortcut] = ShortcutAction.defaults
     private(set) var displayedToolOrder: [Tool] = []
     private let buttonSide: CGFloat = 34
     private var mainStack: NSStackView!
@@ -1273,6 +1296,7 @@ final class Toolbar: NSObject {
     }
 
     func updateShortcutTips(_ shortcuts: [ShortcutAction: Shortcut]) {
+        self.shortcuts = shortcuts
         func key(_ action: ShortcutAction) -> String { shortcuts[action]?.displayName ?? "—" }
         toolButtons[.pen]?.toolTip = "펜 · P (로컬) / \(key(.pen)) (전역)"
         toolButtons[.arrow]?.toolTip = "화살표 그리기 · A (로컬) / \(key(.arrow)) (전역)"
@@ -1286,6 +1310,17 @@ final class Toolbar: NSObject {
         toolButtons[.rectangleMagnifier]?.toolTip = "사각형 확대 · \(key(.rectangleMagnifier)) (드래그로 고정 · 짧은 클릭으로 해제 · 휠 배율)"
         undoButton?.toolTip = "실행취소 · ⌘Z (로컬) / \(key(.undo)) (전역)"
     }
+
+    // ⌥를 누르고 있는 동안 버튼마다 전역 단축키 글자를 겹쳐 보여준다
+    func setShortcutBadgesVisible(_ visible: Bool) {
+        for (tool, button) in toolButtons {
+            let action = ShortcutAction.allCases.first { $0.tool == tool }
+            button.badge = visible ? action.flatMap { shortcuts[$0]?.keyLabel } : nil
+        }
+        undoButton?.badge = visible ? shortcuts[.undo]?.keyLabel : nil
+    }
+
+    func badge(for tool: Tool) -> String? { toolButtons[tool]?.badge }
 
     // 클릭 모드에서는 ⌘Z가 밑 앱으로 가버리므로 툴바에도 실행취소를 둔다
     private func makeUndoButton() -> ToolbarButton {
@@ -1751,6 +1786,15 @@ final class BrushApp: NSObject, NSApplicationDelegate {
             self?.settings.magnification = value
             self?.preferences?.refreshAppearanceLabels()
         }
+        // ⌥를 누르고 있으면 툴바에 단축키 글자를 띄운다. 전역 모니터는 손쉬운 사용 권한이 있어야
+        // 되니 클릭 통과 모드까지 잡아주고, 권한이 없어도 앱이 활성인 동안은 로컬 모니터가 대신 받는다
+        _ = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.updateShortcutBadges(event.modifierFlags)
+            return event
+        }
+        NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.updateShortcutBadges(event.modifierFlags)
+        }
 
         preferences = PreferencesController(settings: settings)
         preferences.window?.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 2)
@@ -1771,6 +1815,10 @@ final class BrushApp: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         canvas?.stopTransientEffects()
         hotKeys?.unregisterAll()
+    }
+
+    private func updateShortcutBadges(_ flags: NSEvent.ModifierFlags) {
+        toolbar.setShortcutBadgesVisible(isOn && flags.contains(.option))
     }
 
     private func screenUnderMouse() -> NSScreen {
@@ -1879,6 +1927,7 @@ final class BrushApp: NSObject, NSApplicationDelegate {
         canvas.resetHistory()  // 지워진 그림이 다음에 켤 때 ⌘Z로 되살아나면 곤란하다
         canvas.stopTransientEffects()
         _ = hotKeys.setSessionActive(false)
+        toolbar.setShortcutBadgesVisible(false)
         window.orderOut(nil)
         toolbar.panel.orderOut(nil)
         isOn = false
@@ -2093,6 +2142,19 @@ func runSelfTest() -> Never {
     check(testToolbar.toolTip(for: .click)?.contains("⌥1") == true &&
           testToolbar.toolTip(for: .pen)?.contains("⌥2") == true,
           "툴바 툴팁이 새 기본 번호 순서를 표시")
+    check(testToolbar.badge(for: .pen) == nil, "평소에는 툴바에 단축키 배지가 없음")
+    testToolbar.setShortcutBadgesVisible(true)
+    check(testToolbar.badge(for: .click) == "1" && testToolbar.badge(for: .pen) == "2" &&
+          testToolbar.badge(for: .rectangleMagnifier) == "0",
+          "⌥를 누르면 툴바 버튼에 단축키 번호가 뜸")
+    var letterShortcuts = ShortcutAction.defaults
+    letterShortcuts[.pen] = Shortcut(keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(optionKey))
+    testToolbar.updateShortcutTips(letterShortcuts)
+    testToolbar.setShortcutBadgesVisible(true)
+    check(testToolbar.badge(for: .pen) == "P", "단축키를 바꾸면 배지 글자도 따라 바뀜")
+    testToolbar.setShortcutBadgesVisible(false)
+    check(testToolbar.badge(for: .pen) == nil && testToolbar.badge(for: .click) == nil,
+          "⌥에서 손을 떼면 배지가 모두 사라짐")
 
     // MARK: 임시 포인터 / 확대 — 도형 및 실행취소 이력과 분리
     for transientTool in [Tool.laser, .arrowPointer, .circleMagnifier, .rectangleMagnifier] {
