@@ -1068,18 +1068,21 @@ final class CanvasView: NSView, NSTextFieldDelegate {
     }
 
     private func drawArrow(from a: NSPoint, to b: NSPoint, width: CGFloat) {
-        let line = NSBezierPath()
-        line.lineWidth = width
-        line.lineCapStyle = .round
-        line.move(to: a)
-        line.line(to: b)
-        line.stroke()
-
         let angle = atan2(b.y - a.y, b.x - a.x)
         let headLength = max(14, width * 3.5)
         let headAngle: CGFloat = .pi / 7
         let p1 = NSPoint(x: b.x - headLength * cos(angle - headAngle), y: b.y - headLength * sin(angle - headAngle))
         let p2 = NSPoint(x: b.x - headLength * cos(angle + headAngle), y: b.y - headLength * sin(angle + headAngle))
+
+        // 몸통은 화살촉 밑변까지만 그린다 — 끝점(b)까지 그리면 둥근 선 끝(round cap)이
+        // 뾰족해야 할 촉 끝을 넘어 동그랗게 튀어나온다
+        let baseCenter = NSPoint(x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2)
+        let line = NSBezierPath()
+        line.lineWidth = width
+        line.lineCapStyle = .round
+        line.move(to: a)
+        line.line(to: baseCenter)
+        line.stroke()
         let head = NSBezierPath()
         head.move(to: b)
         head.line(to: p1)

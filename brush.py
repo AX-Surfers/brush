@@ -750,7 +750,6 @@ class Canvas(QWidget):
                        Qt.AlignLeft | Qt.AlignTop, s.text or "")
 
     def _draw_arrow(self, g, a, b, width, color):
-        g.drawLine(a, b)
         angle = math.atan2(b.y() - a.y(), b.x() - a.x())
         head_len = max(14, width * 3.5)
         head_angle = math.pi / 7
@@ -758,6 +757,10 @@ class Canvas(QWidget):
                      b.y() - head_len * math.sin(angle - head_angle))
         p2 = QPointF(b.x() - head_len * math.cos(angle + head_angle),
                      b.y() - head_len * math.sin(angle + head_angle))
+        # 몸통은 화살촉 밑변까지만 그린다 — 끝점(b)까지 그리면 RoundCap이
+        # 뾰족해야 할 촉 끝을 넘어 동그랗게 튀어나온다
+        base_center = QPointF((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2)
+        g.drawLine(a, base_center)
         g.setPen(Qt.NoPen)
         g.setBrush(color)
         g.drawPolygon(QPolygonF([b, p1, p2]))
