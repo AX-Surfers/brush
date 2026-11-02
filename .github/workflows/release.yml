@@ -25,6 +25,9 @@ jobs:
     name: Windows — Brush.exe
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      # 러너 출력이 cp1252라 셀프테스트의 한글 메시지를 찍다가 멈춘다 — 파이썬 입출력을 UTF-8로
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
         with:
