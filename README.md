@@ -43,6 +43,17 @@ git clone https://github.com/AX-Surfers/brush.git && cd brush && ./build.sh && o
 
 ## 설치 (Windows)
 
+### 방법 1 — 내려받기
+
+[릴리스](https://github.com/AX-Surfers/brush/releases/latest)에서 `Brush-windows.zip` 을 받아
+압축을 풀고 `Brush.exe` 를 원하는 폴더에 둡니다. Python 없이 바로 실행됩니다.
+
+서명하지 않은 프로그램이라 첫 실행 때 **"Windows의 PC 보호"** 창이 뜰 수 있습니다.
+**추가 정보** → **실행** 을 누르면 됩니다 (소스는 전부 이 저장소의 `brush.py` 입니다).
+로그인 시 자동 실행하려면 `Win+R` → `shell:startup` 폴더에 `Brush.exe` 바로가기를 넣습니다.
+
+### 방법 2 — Python 으로 실행
+
 [Python 3.10 이상](https://www.python.org/downloads/windows/)이 필요합니다 (설치할 때
 "Add python.exe to PATH" 체크). PowerShell 에서:
 
@@ -130,6 +141,8 @@ Windows 외의 플랫폼에서 `brush.py` 를 돌리면 전역 단축키는 잡�
 - `build.sh` — 두 아키텍처로 컴파일해 하나로 합치고 `Brush.app` 번들 생성 + 셀프테스트.
   `./build.sh --zip` 이면 배포용 `Brush.zip` 까지
 - `brush.py` — Windows 판 전부. 같은 도구·환경설정·포인터·확대 구조를 PySide6로 옮긴 이식판
+- `.github/workflows/release.yml` — GitHub 에서 릴리스를 게시하면 `Brush.zip`(macOS) 과
+  `Brush-windows.zip`(Windows, `brush.py` 를 `Brush.exe` 하나로 묶은 것) 을 자동으로 만들어 붙임
 
 셀프테스트는 두 판 모두 같은 항목을 검사합니다.
 

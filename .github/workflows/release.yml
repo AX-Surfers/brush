@@ -1,0 +1,98 @@
+name: Release
+
+# 릴리스를 게시하면 두 운영체제용 배포 파일(Brush.zip / Brush-windows.zip)을 만들어 그 릴리스에 붙인다.
+# 이미 게시된 릴리스에 다시 붙이려면 Actions 탭에서 이 워크플로를 태그 이름과 함께 직접 실행.
+# 이 파일을 고치는 PR에서는 올리지 않고 만들기·셀프테스트까지만 돌려 미리 확인한다.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 파일을 붙일 릴리스 태그 (예 v1.3)
+        required: true
+  pull_request:
+    paths: [.github/workflows/release.yml]
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  windows:
+    name: Windows — Brush.exe
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: PySide6 · PyInstaller 설치
+        run: python -m pip install --upgrade pip PySide6 pyinstaller
+
+      - name: 셀프테스트
+        run: python brush.py --selftest
+
+      # 받는 사람이 Python 없이 바로 실행하도록 하나로 묶는다 (README의 직접 빌드 방법과 같은 명령)
+      - name: Brush.exe 만들기
+        run: python -m PyInstaller --noconsole --onefile --name Brush brush.py
+
+      # 묶는 과정에서 빠진 부품이 없는지 — 만든 exe로 셀프테스트를 한 번 더 돌린다
+      - name: Brush.exe 셀프테스트
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\Brush.exe -ArgumentList '--selftest' -PassThru
+          $null = $p.Handle  # 이걸 잡아두지 않으면 끝난 뒤 ExitCode가 비어 있다
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "Brush.exe 셀프테스트가 3분 안에 끝나지 않음" }
+          if ($p.ExitCode -ne 0) { throw "Brush.exe 셀프테스트 실패 (종료 코드 $($p.ExitCode))" }
+          "Brush.exe 셀프테스트 통과 · 크기 $([math]::Round((Get-Item dist\Brush.exe).Length / 1MB, 1)) MB"
+
+      - name: 압축
+        shell: pwsh
+        run: Compress-Archive -Path dist\Brush.exe -DestinationPath Brush-windows.zip
+
+      - name: 릴리스에 올리기
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ env.TAG }}" Brush-windows.zip --clobber --repo "${{ github.repository }}"
+
+      - name: PR에서는 결과물만 보관
+        if: env.TAG == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: Brush-windows
+          path: Brush-windows.zip
+
+  macos:
+    name: macOS — Brush.app
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # build.sh가 arm64 + x86_64로 합치고 셀프테스트까지 돈 뒤 Brush.zip을 만든다
+      - name: 빌드 및 셀프테스트
+        run: ./build.sh --zip
+
+      - name: 릴리스에 올리기
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" Brush.zip --clobber --repo "${{ github.repository }}"
+
+      - name: PR에서는 결과물만 보관
+        if: env.TAG == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: Brush-macos
+          path: Brush.zip
